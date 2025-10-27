@@ -6,10 +6,10 @@ export function getDomain(href: string): string | null {
     const u = new URL(href);
     return u.hostname.replace(/^www\./, "");
   } catch {
-  r eturn null;
+    return null;
   }
 }
 
 export function urlHash(href: string): string {
-return crypto.createHash("sha256").update(href.trim()).digest("hex");
+  return crypto.createHash("sha256").update(href.trim()).digest("hex");
 }
