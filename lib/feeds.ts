@@ -13,7 +13,7 @@ export const FEEDS: Feed[] = [
   },
   {
     name: "AP Top",
-    url: "https://apnews.com/hub/apf-topnews?utm_source=apnews.com&utm_medium=referral&utm_campaign=rss",
+    url: "https://rsshub.app/apnews/topics/ap-top-news",
   },
   { name: "Politico EU", url: "https://www.politico.eu/feed/" },
   {
