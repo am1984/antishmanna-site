@@ -1,7 +1,7 @@
 // app/api/ingest/route.ts
 
 // ─────────────────────────────────────────────────────────
-// Runtime config (Vercel cron uses GET; we support GET & POST)
+// Next/Vercel runtime
 // ─────────────────────────────────────────────────────────
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,13 +12,12 @@ export const dynamic = "force-dynamic";
 import Parser from "rss-parser";
 import { z } from "zod";
 import { formatISO, parseISO } from "date-fns";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseAdmin } from "@/lib/supabaseAdmin"; // server-only client
 import { FEEDS } from "@/lib/feeds";
 import { getDomain, urlHash } from "@/lib/url";
 
 // ─────────────────────────────────────────────────────────
 // Optional auth: set CRON_SECRET in Vercel → Settings → Environment Variables
-// Vercel will include: Authorization: Bearer <CRON_SECRET>
 // ─────────────────────────────────────────────────────────
 function isAuthorized(req: Request) {
   const expected = process.env.CRON_SECRET;
@@ -26,7 +25,7 @@ function isAuthorized(req: Request) {
   return expected ? got === `Bearer ${expected}` : true; // allow if not set
 }
 
-// Schema for RSS items (liberal; different feeds vary)
+// Liberal RSS item schema (feeds vary)
 const Item = z.object({
   title: z.string().optional(),
   link: z.string().url().optional(),
@@ -36,10 +35,17 @@ const Item = z.object({
   content: z.string().optional(),
 });
 
-// Shared RSS parser with timeout
-const parser = new Parser({ timeout: 15000 });
+// Shared parser with browsery headers to avoid 403s
+const parser = new Parser({
+  timeout: 15000,
+  headers: {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) antishmanna-site/1.0",
+    Accept: "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+  },
+});
 
-// Ensure a “today” cluster exists; return its id
+// Helper: ensure a “today” cluster exists and return its id
 async function ensureTodayCluster(): Promise<string> {
   const today = formatISO(new Date(), { representation: "date" }); // YYYY-MM-DD
 
@@ -62,16 +68,27 @@ async function ensureTodayCluster(): Promise<string> {
   return inserted!.id as string;
 }
 
+// Fetch one feed with retries & backoff
+async function fetchFeed(name: string, url: string, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const feed = await parser.parseURL(url);
+      return { name, items: feed.items ?? [] };
+    } catch (e: any) {
+      if (i === retries) throw new Error(`${name}: ${e?.message || e}`);
+      await new Promise((r) => setTimeout(r, 500 * (i + 1))); // 0.5s, 1s, ...
+    }
+  }
+  return { name, items: [] };
+}
+
 // Core ingestion runner
 async function runIngestion() {
   const clusterId = await ensureTodayCluster();
 
-  // Fetch all feeds in parallel (settled so one failure doesn’t kill all)
+  // Pull all feeds in parallel; a failure in one won’t kill the run
   const results = await Promise.allSettled(
-    FEEDS.map(async (f) => {
-      const feed = await parser.parseURL(f.url);
-      return { source: f.name, items: feed.items };
-    })
+    FEEDS.map((f) => fetchFeed(f.name, f.url))
   );
 
   let articlesUpserted = 0;
@@ -80,12 +97,13 @@ async function runIngestion() {
 
   for (const r of results) {
     if (r.status === "rejected") {
-      errors.push({ source: "unknown", error: String(r.reason) });
+      errors.push({ source: "fetch", error: String(r.reason) });
       continue;
     }
 
-    const { source, items } = r.value;
-    for (const raw of items ?? []) {
+    const { name: source, items } = r.value;
+
+    for (const raw of items) {
       const parsed = Item.safeParse(raw);
       if (!parsed.success || !parsed.data.link) continue;
 
@@ -107,7 +125,7 @@ async function runIngestion() {
 
       const content = parsed.data.contentSnippet || parsed.data.content || null;
 
-      // Upsert article by URL (url is UNIQUE in schema)
+      // Upsert article by URL (url is UNIQUE)
       const { data: articleRow, error: upErr } = await supabaseAdmin
         .from("articles")
         .upsert(
@@ -137,7 +155,7 @@ async function runIngestion() {
       articlesUpserted += 1;
       const articleId = articleRow!.id as string;
 
-      // Link article→cluster (idempotent via upsert on primary key)
+      // Link article to today’s cluster (idempotent on PK)
       const { error: linkErr } = await supabaseAdmin
         .from("cluster_members")
         .upsert([{ cluster_id: clusterId, article_id: articleId, score: 1 }], {
@@ -154,13 +172,7 @@ async function runIngestion() {
     }
   }
 
-  return {
-    ok: true,
-    clusterId,
-    articlesUpserted,
-    linksUpserted,
-    errors,
-  };
+  return { ok: true, clusterId, articlesUpserted, linksUpserted, errors };
 }
 
 // Handlers (Vercel Cron calls GET)
@@ -177,6 +189,7 @@ export async function GET(req: Request) {
   }
 }
 
+// Keep POST for manual triggers
 export async function POST(req: Request) {
   if (!isAuthorized(req)) return new Response("Unauthorized", { status: 401 });
   try {
