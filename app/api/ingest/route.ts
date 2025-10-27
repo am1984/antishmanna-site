@@ -25,6 +25,20 @@ function isAuthorized(req: Request) {
   return expected ? got === `Bearer ${expected}` : true; // allow if not set
 }
 
+function unwrapGoogleNewsLink(link: string): string {
+  try {
+    const u = new URL(link);
+    if (u.hostname.includes("news.google.com")) {
+      // Google News puts the original URL in ?url=<...>
+      const real = u.searchParams.get("url");
+      if (real) return real;
+    }
+  } catch {
+    // noop – fall back to link as-is
+  }
+  return link;
+}
+
 // Liberal RSS item schema (feeds vary)
 const Item = z.object({
   title: z.string().optional(),
@@ -68,18 +82,37 @@ async function ensureTodayCluster(): Promise<string> {
   return inserted!.id as string;
 }
 
-// Fetch one feed with retries & backoff
 async function fetchFeed(name: string, url: string, retries = 2) {
+  const headers: Record<string, string> = {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) antishmanna-site/1.0",
+    Accept: "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+    "Accept-Language": "en-GB,en;q=0.8",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+    Referer: "https://www.google.com/",
+  };
+
+  let lastErr: any = null;
+
   for (let i = 0; i <= retries; i++) {
     try {
-      const feed = await parser.parseURL(url);
+      const res = await fetch(url, { headers, cache: "no-store" });
+      if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+
+      const xml = await res.text();
+      // Some feeds include stray attributes / bad entities; let parser try from string
+      const feed = await parser.parseString(xml);
+
       return { name, items: feed.items ?? [] };
-    } catch (e: any) {
-      if (i === retries) throw new Error(`${name}: ${e?.message || e}`);
-      await new Promise((r) => setTimeout(r, 500 * (i + 1))); // 0.5s, 1s, ...
+    } catch (e) {
+      lastErr = e;
+      // brief backoff on retryable errors
+      await new Promise((r) => setTimeout(r, 600 * (i + 1)));
     }
   }
-  return { name, items: [] };
+
+  throw new Error(`${name}: ${lastErr?.message || String(lastErr)}`);
 }
 
 // Core ingestion runner
@@ -107,7 +140,8 @@ async function runIngestion() {
       const parsed = Item.safeParse(raw);
       if (!parsed.success || !parsed.data.link) continue;
 
-      const link = parsed.data.link.trim();
+      const rawLink = parsed.data.link.trim();
+      const link = unwrapGoogleNewsLink(rawLink);
       const domain = getDomain(link);
       const hash = urlHash(link);
       const title = parsed.data.title ?? null;

@@ -1,5 +1,5 @@
 // lib/feeds.ts
-export type Feed = { name: string, url: string };
+export type Feed = { name: string; url: string };
 
 // Profile D: BBC, Reuters, AP, Politico EU + US
 // Note: Some publishers change RSS endpoints or rate-limit.
@@ -7,7 +7,10 @@ export type Feed = { name: string, url: string };
 export const FEEDS: Feed[] = [
   { name: "BBC World", url: "https://feeds.bbci.co.uk/news/world/rss.xml" },
   { name: "BBC UK", url: "https://feeds.bbci.co.uk/news/uk/rss.xml" },
-  { name: "Reuters World", url: "https://feeds.reuters.com/reuters/worldNews" },
+  {
+    name: "Reuters World",
+    url: "https://news.google.com/rss/search?q=site:reuters.com&hl=en-GB&gl=GB&ceid=GB:en",
+  },
   {
     name: "AP Top",
     url: "https://apnews.com/hub/apf-topnews?utm_source=apnews.com&utm_medium=referral&utm_campaign=rss",
