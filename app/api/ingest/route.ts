@@ -157,6 +157,22 @@ async function runIngestion() {
         }
       }
 
+      // 12 hours in ms
+      const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+
+      if (published_at) {
+        const ageMs = Date.now() - new Date(published_at).getTime();
+        if (ageMs > TWELVE_HOURS) {
+          continue; // ✅ Skip this article — too old
+        }
+      }
+
+      if (!published_at) continue; // Skip items without valid date
+
+      // Require meaningful text content
+      const content = parsed.data.contentSnippet || parsed.data.content || null;
+      if (!content || content.trim().length < 5) continue;
+
       const content = parsed.data.contentSnippet || parsed.data.content || null;
 
       // Upsert article by URL (url is UNIQUE)
