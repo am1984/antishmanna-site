@@ -13,11 +13,16 @@ export const FEEDS: Feed[] = [
   },
   {
     name: "AP Top",
-    url: "https://rsshub.app/apnews/topics/ap-top-news",
+    //    url: "https://rsshub.app/apnews/topics/ap-top-news",
+    url: "https://news.google.com/rss/search?q=site:apnews.com&hl=en-GB&gl=GB&ceid=GB:en",
   },
   { name: "Politico EU", url: "https://www.politico.eu/feed/" },
   {
     name: "Politico US",
+    url: "https://www.politico.com/rss/politics-news.xml",
+  },
+  {
+    name: "Bloomberg",
     url: "https://www.politico.com/rss/politics-news.xml",
   },
 ];
