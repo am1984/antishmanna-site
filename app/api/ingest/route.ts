@@ -21,6 +21,10 @@ const Item = z.object({
 
 const parser = new Parser({ timeout: 15000 });
 
+export async function GET() {
+  return NextResponse.json({ ok: true });
+}
+
 async function ensureTodayCluster(): Promise<string> {
   const today = new Date();
   const todayStr = formatISO(today, { representation: "date" }); // YYYY-MM-DD
