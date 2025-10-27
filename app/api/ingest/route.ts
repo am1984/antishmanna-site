@@ -1,5 +1,14 @@
 // app/api/ingest/route.ts
-import { NextResponse } from "next/server";
+
+// ─────────────────────────────────────────────────────────
+// Runtime config (Vercel cron uses GET; we support GET & POST)
+// ─────────────────────────────────────────────────────────
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// ─────────────────────────────────────────────────────────
+// Imports
+// ─────────────────────────────────────────────────────────
 import Parser from "rss-parser";
 import { z } from "zod";
 import { formatISO, parseISO } from "date-fns";
@@ -7,9 +16,17 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { FEEDS } from "@/lib/feeds";
 import { getDomain, urlHash } from "@/lib/url";
 
-export const runtime = "nodejs"; // ensure Node runtime on Vercel
-export const dynamic = "force-dynamic"; // don't cache
+// ─────────────────────────────────────────────────────────
+// Optional auth: set CRON_SECRET in Vercel → Settings → Environment Variables
+// Vercel will include: Authorization: Bearer <CRON_SECRET>
+// ─────────────────────────────────────────────────────────
+function isAuthorized(req: Request) {
+  const expected = process.env.CRON_SECRET;
+  const got = req.headers.get("authorization") || "";
+  return expected ? got === `Bearer ${expected}` : true; // allow if not set
+}
 
+// Schema for RSS items (liberal; different feeds vary)
 const Item = z.object({
   title: z.string().optional(),
   link: z.string().url().optional(),
@@ -19,80 +36,79 @@ const Item = z.object({
   content: z.string().optional(),
 });
 
+// Shared RSS parser with timeout
 const parser = new Parser({ timeout: 15000 });
 
-export async function GET() {
-  return NextResponse.json({ ok: true });
-}
-
+// Ensure a “today” cluster exists; return its id
 async function ensureTodayCluster(): Promise<string> {
-  const today = new Date();
-  const todayStr = formatISO(today, { representation: "date" }); // YYYY-MM-DD
+  const today = formatISO(new Date(), { representation: "date" }); // YYYY-MM-DD
 
   const { data: found, error: selErr } = await supabaseAdmin
     .from("clusters")
     .select("id")
-    .eq("cluster_date", todayStr)
+    .eq("cluster_date", today)
     .limit(1);
 
   if (selErr) throw selErr;
-  if (found && found[0]) return found[0].id;
+  if (found?.[0]?.id) return found[0].id as string;
 
   const { data: inserted, error: insErr } = await supabaseAdmin
     .from("clusters")
-    .insert([{ cluster_date: todayStr, label: "Top stories" }])
+    .insert([{ cluster_date: today, label: "Top stories" }])
     .select("id")
     .single();
 
   if (insErr) throw insErr;
-  return inserted.id as string;
+  return inserted!.id as string;
 }
 
-export async function POST() {
+// Core ingestion runner
+async function runIngestion() {
   const clusterId = await ensureTodayCluster();
 
-  const feedResults = await Promise.allSettled(
+  // Fetch all feeds in parallel (settled so one failure doesn’t kill all)
+  const results = await Promise.allSettled(
     FEEDS.map(async (f) => {
       const feed = await parser.parseURL(f.url);
-      return { name: f.name, items: feed.items };
+      return { source: f.name, items: feed.items };
     })
   );
 
-  let inserted = 0;
-  let linked = 0;
+  let articlesUpserted = 0;
+  let linksUpserted = 0;
   const errors: Array<{ source: string; error: string }> = [];
 
-  for (const fr of feedResults) {
-    if (fr.status === "rejected") {
-      errors.push({ source: "unknown", error: String(fr.reason) });
+  for (const r of results) {
+    if (r.status === "rejected") {
+      errors.push({ source: "unknown", error: String(r.reason) });
       continue;
     }
 
-    const { name, items } = fr.value;
+    const { source, items } = r.value;
     for (const raw of items ?? []) {
-      const item = Item.safeParse(raw);
-      if (!item.success || !item.data.link) continue;
+      const parsed = Item.safeParse(raw);
+      if (!parsed.success || !parsed.data.link) continue;
 
-      const link = item.data.link.trim();
+      const link = parsed.data.link.trim();
       const domain = getDomain(link);
       const hash = urlHash(link);
-      const title = item.data.title ?? null;
+      const title = parsed.data.title ?? null;
 
-      // Prefer isoDate → fallback to pubDate → null
-      const published_at = (() => {
-        const ts = item.data.isoDate ?? item.data.pubDate;
-        if (!ts) return null as any;
+      // Prefer isoDate; fallback to pubDate; else null
+      const ts = parsed.data.isoDate ?? parsed.data.pubDate ?? null;
+      let published_at: string | null = null;
+      if (ts) {
         try {
-          return parseISO(ts).toISOString();
+          published_at = parseISO(ts).toISOString();
         } catch {
-          return null as any;
+          published_at = null;
         }
-      })();
+      }
 
-      const content = item.data.contentSnippet || item.data.content || null;
+      const content = parsed.data.contentSnippet || parsed.data.content || null;
 
-      // Upsert into articles by unique url (enforced in schema)
-      const { data: articleResult, error: upErr } = await supabaseAdmin
+      // Upsert article by URL (url is UNIQUE in schema)
+      const { data: articleRow, error: upErr } = await supabaseAdmin
         .from("articles")
         .upsert(
           [
@@ -105,7 +121,7 @@ export async function POST() {
               hash,
               language: null,
               status: "processed",
-              source: name,
+              source,
             },
           ],
           { onConflict: "url" }
@@ -114,30 +130,62 @@ export async function POST() {
         .single();
 
       if (upErr) {
-        errors.push({ source: name, error: upErr.message });
+        errors.push({ source, error: upErr.message });
         continue;
       }
 
-      const articleId = articleResult.id as string;
+      articlesUpserted += 1;
+      const articleId = articleRow!.id as string;
 
-      // Link article to today’s cluster (ignore if already linked)
+      // Link article→cluster (idempotent via upsert on primary key)
       const { error: linkErr } = await supabaseAdmin
         .from("cluster_members")
-        .insert([{ cluster_id: clusterId, article_id: articleId, score: 1 }], {
-          count: "exact",
+        .upsert([{ cluster_id: clusterId, article_id: articleId, score: 1 }], {
+          onConflict: "cluster_id,article_id",
         })
         .select("article_id")
         .single();
 
-      if (linkErr && !String(linkErr.message).includes("duplicate key")) {
-        errors.push({ source: name, error: linkErr.message });
+      if (linkErr) {
+        errors.push({ source, error: linkErr.message });
       } else {
-        linked += 1;
+        linksUpserted += 1;
       }
-
-      inserted += 1;
     }
   }
 
-  return NextResponse.json({ ok: true, clusterId, inserted, linked, errors });
+  return {
+    ok: true,
+    clusterId,
+    articlesUpserted,
+    linksUpserted,
+    errors,
+  };
+}
+
+// Handlers (Vercel Cron calls GET)
+export async function GET(req: Request) {
+  if (!isAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+  try {
+    const result = await runIngestion();
+    return Response.json(result);
+  } catch (e: any) {
+    return Response.json(
+      { ok: false, error: String(e?.message ?? e) },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(req: Request) {
+  if (!isAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+  try {
+    const result = await runIngestion();
+    return Response.json(result);
+  } catch (e: any) {
+    return Response.json(
+      { ok: false, error: String(e?.message ?? e) },
+      { status: 500 }
+    );
+  }
 }
