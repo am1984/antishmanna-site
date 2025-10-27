@@ -2,7 +2,49 @@
 // Citadel-inspired look: deep navy palette, clean type, subtle gradients
 // Drop this into your Next.js App Router project at app/page.tsx
 
-export default function Home() {
+import { supabase } from "@/lib/supabase";
+
+export default async function Home() {
+  // Fetch today's clusters (top 1 for now)
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { data: clusters } = await supabase
+    .from("daily_top_clusters")
+    .select("*")
+    .eq("cluster_date", today)
+    .order("articles_count", { ascending: false })
+    .limit(1);
+
+  // If we have no cluster yet (e.g., first run), show placeholder bullets:
+  const cluster = clusters?.[0];
+
+  // Get summary if exists
+  let summaryBullets: string[] = [
+    "Fetching real data…",
+    "RSS ingestion pipeline not yet active.",
+    "Once active this card updates daily.",
+    "Clusters = groups of similar articles.",
+    "Summaries = 5 bullet executive view.",
+  ];
+
+  if (cluster) {
+    const { data: summaries } = await supabase
+      .from("summaries")
+      .select("*")
+      .eq("cluster_id", cluster.cluster_id)
+      .limit(1);
+
+    if (summaries?.[0]) {
+      summaryBullets = [
+        summaries[0].bullet_1,
+        summaries[0].bullet_2,
+        summaries[0].bullet_3,
+        summaries[0].bullet_4,
+        summaries[0].bullet_5,
+      ].filter(Boolean);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#0b1730] text-white">
       {/* Top gradient accent */}
@@ -76,28 +118,12 @@ export default function Home() {
                 Top stories at a glance
               </h3>
               <ul className="mt-4 space-y-3 text-sm text-white/80">
-                <li className="flex gap-3">
-                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
-                  Central bank holds rates; signals path dependent on inflation
-                  data.
-                </li>
-                <li className="flex gap-3">
-                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
-                  Major tech earnings beat on cloud; guidance mixed into Q4.
-                </li>
-                <li className="flex gap-3">
-                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
-                  EU proposes new rules on AI model transparency and safety.
-                </li>
-                <li className="flex gap-3">
-                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
-                  Energy markets steady as inventories rebuild ahead of winter.
-                </li>
-                <li className="flex gap-3">
-                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
-                  Geopolitical talks resume; cease‑fire window extended 48
-                  hours.
-                </li>
+                {summaryBullets.map((b, i) => (
+                  <li key={i} className="flex gap-3">
+                    <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
+                    {b}
+                  </li>
+                ))}
               </ul>
               <div className="mt-5 flex gap-3 text-xs text-white/60">
                 <span className="rounded bg-white/10 px-2 py-1">US</span>
