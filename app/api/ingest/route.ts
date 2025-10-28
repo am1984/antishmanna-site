@@ -15,6 +15,8 @@ import { formatISO, parseISO } from "date-fns";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // server-only client
 import { FEEDS } from "@/lib/feeds";
 import { getDomain, urlHash } from "@/lib/url";
+import { JSDOM } from "jsdom";
+import { Readability } from "@mozilla/readability";
 
 // ─────────────────────────────────────────────────────────
 // Optional auth: set CRON_SECRET in Vercel → Settings → Environment Variables
@@ -25,18 +27,56 @@ function isAuthorized(req: Request) {
   return expected ? got === `Bearer ${expected}` : true; // allow if not set
 }
 
+// ─────────────────────────────────────────────────────────
+// Helpers: Google News unwrap + full-text extraction
+// ─────────────────────────────────────────────────────────
 function unwrapGoogleNewsLink(link: string): string {
   try {
     const u = new URL(link);
     if (u.hostname.includes("news.google.com")) {
-      // Google News puts the original URL in ?url=<...>
       const real = u.searchParams.get("url");
       if (real) return real;
     }
-  } catch {
-    // noop – fall back to link as-is
-  }
+  } catch {}
   return link;
+}
+
+async function extractFullText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) antishmanna-site/1.0",
+        Accept: "text/html,application/xhtml+xml",
+      },
+      cache: "no-store",
+      redirect: "follow",
+    });
+    if (!res.ok) return null;
+
+    const html = await res.text();
+    const dom = new JSDOM(html, { url });
+    const article = new Readability(dom.window.document).parse();
+    if (!article?.textContent) return null;
+
+    return article.textContent.replace(/\s+/g, " ").trim();
+  } catch {
+    return null;
+  }
+}
+
+// Hybrid policy: which sources always get full-text extraction?
+const FULLTEXT_SOURCES = new Set(["Reuters", "AP News", "Bloomberg"]);
+
+// Optional: guard that Google News items truly come from the expected domain.
+function domainMatchesExpected(url: string, source: string): boolean {
+  try {
+    const h = new URL(url).hostname;
+    if (source === "Reuters") return h.endsWith("reuters.com");
+    if (source === "AP News") return h.endsWith("apnews.com");
+    if (source === "Bloomberg") return h.endsWith("bloomberg.com");
+  } catch {}
+  return true; // be permissive for others
 }
 
 // Liberal RSS item schema (feeds vary)
@@ -140,10 +180,15 @@ async function runIngestion() {
       const parsed = Item.safeParse(raw);
       if (!parsed.success || !parsed.data.link) continue;
 
+      // Unwrap Google News → real publisher URL
       const rawLink = parsed.data.link.trim();
-      const link = unwrapGoogleNewsLink(rawLink);
-      const domain = getDomain(link);
-      const hash = urlHash(link);
+      const linkUnwrapped = unwrapGoogleNewsLink(rawLink);
+
+      // Optional safety: skip if Google slipped an unexpected domain
+      if (!domainMatchesExpected(linkUnwrapped, source)) continue;
+
+      const domain = getDomain(linkUnwrapped);
+      const hash = urlHash(linkUnwrapped);
       const title = parsed.data.title ?? null;
 
       // Prefer isoDate; fallback to pubDate; else null
@@ -157,21 +202,37 @@ async function runIngestion() {
         }
       }
 
-      // 12 hours in ms
+      // Freshness filter: ≤ 12h
       const TWELVE_HOURS = 12 * 60 * 60 * 1000;
-
       if (published_at) {
         const ageMs = Date.now() - new Date(published_at).getTime();
-        if (ageMs > TWELVE_HOURS) {
-          continue; // ✅ Skip this article — too old
-        }
+        if (ageMs > TWELVE_HOURS) continue;
       }
 
-      if (!published_at) continue; // Skip items without valid date
+      // Start with feed snippet
+      let content = parsed.data.contentSnippet || parsed.data.content || null;
 
-      // Require meaningful text content
-      const content = parsed.data.contentSnippet || parsed.data.content || null;
-      if (!content || content.trim().length < 5) continue;
+      // HYBRID: always full-text for Reuters/AP/Bloomberg; else keep snippet
+      if (FULLTEXT_SOURCES.has(source)) {
+        const full = await extractFullText(linkUnwrapped);
+        if (full && full.length > 200) {
+          content = full;
+        } else {
+          // If extraction failed, fall back to snippet, but enforce minimum quality
+          if (!content || content.trim().length < 120) continue;
+        }
+      } else {
+        // Native RSS (BBC, Politico, etc.) – only use snippet if meaningful
+        if (!content || content.trim().length < 120) {
+          // optional light fallback: try full text if snippet is too thin
+          const maybeFull = await extractFullText(linkUnwrapped);
+          if (maybeFull && maybeFull.length > 200) {
+            content = maybeFull;
+          } else {
+            continue; // still too weak → drop
+          }
+        }
+      }
 
       // Upsert article by URL (url is UNIQUE)
       const { data: articleRow, error: upErr } = await supabaseAdmin
@@ -179,7 +240,7 @@ async function runIngestion() {
         .upsert(
           [
             {
-              url: link,
+              url: linkUnwrapped,
               domain,
               title,
               published_at: published_at as any,
