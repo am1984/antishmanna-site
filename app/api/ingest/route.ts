@@ -55,12 +55,20 @@ async function extractFullText(url: string): Promise<string | null> {
     if (!res.ok) return null;
 
     const html = await res.text();
+
+    // Lazy import to reduce bundle size / avoid edge conflicts
+    const [{ JSDOM }, { Readability }] = await Promise.all([
+      import("jsdom"),
+      import("@mozilla/readability"),
+    ]);
+
     const dom = new JSDOM(html, { url });
     const article = new Readability(dom.window.document).parse();
     if (!article?.textContent) return null;
 
     return article.textContent.replace(/\s+/g, " ").trim();
-  } catch {
+  } catch (err) {
+    console.error("[extractFullText] error", url, err);
     return null;
   }
 }
@@ -177,106 +185,104 @@ async function runIngestion() {
     const { name: source, items } = r.value;
 
     for (const raw of items) {
-      const parsed = Item.safeParse(raw);
-      if (!parsed.success || !parsed.data.link) continue;
+      try {
+        const parsed = Item.safeParse(raw);
+        if (!parsed.success || !parsed.data.link) continue;
 
-      // Unwrap Google News → real publisher URL
-      const rawLink = parsed.data.link.trim();
-      const linkUnwrapped = unwrapGoogleNewsLink(rawLink);
+        const rawLink = parsed.data.link.trim();
+        const linkUnwrapped = unwrapGoogleNewsLink(rawLink);
+        if (!domainMatchesExpected(linkUnwrapped, source)) continue;
 
-      // Optional safety: skip if Google slipped an unexpected domain
-      if (!domainMatchesExpected(linkUnwrapped, source)) continue;
+        const domain = getDomain(linkUnwrapped);
+        const hash = urlHash(linkUnwrapped);
+        const title = parsed.data.title ?? null;
 
-      const domain = getDomain(linkUnwrapped);
-      const hash = urlHash(linkUnwrapped);
-      const title = parsed.data.title ?? null;
-
-      // Prefer isoDate; fallback to pubDate; else null
-      const ts = parsed.data.isoDate ?? parsed.data.pubDate ?? null;
-      let published_at: string | null = null;
-      if (ts) {
-        try {
-          published_at = parseISO(ts).toISOString();
-        } catch {
-          published_at = null;
+        // timestamps
+        const ts = parsed.data.isoDate ?? parsed.data.pubDate ?? null;
+        let published_at: string | null = null;
+        if (ts) {
+          try {
+            published_at = parseISO(ts).toISOString();
+          } catch {}
         }
-      }
 
-      // Freshness filter: ≤ 12h
-      const TWELVE_HOURS = 12 * 60 * 60 * 1000;
-      if (published_at) {
-        const ageMs = Date.now() - new Date(published_at).getTime();
-        if (ageMs > TWELVE_HOURS) continue;
-      }
-
-      // Start with feed snippet
-      let content = parsed.data.contentSnippet || parsed.data.content || null;
-
-      // HYBRID: always full-text for Reuters/AP/Bloomberg; else keep snippet
-      if (FULLTEXT_SOURCES.has(source)) {
-        const full = await extractFullText(linkUnwrapped);
-        if (full && full.length > 200) {
-          content = full;
-        } else {
-          // If extraction failed, fall back to snippet, but enforce minimum quality
-          if (!content || content.trim().length < 120) continue;
+        // Freshness ≤ 12h
+        const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+        if (published_at) {
+          const ageMs = Date.now() - new Date(published_at).getTime();
+          if (ageMs > TWELVE_HOURS) continue;
         }
-      } else {
-        // Native RSS (BBC, Politico, etc.) – only use snippet if meaningful
-        if (!content || content.trim().length < 120) {
-          // optional light fallback: try full text if snippet is too thin
-          const maybeFull = await extractFullText(linkUnwrapped);
-          if (maybeFull && maybeFull.length > 200) {
-            content = maybeFull;
+
+        // Content policy (hybrid)
+        let content = parsed.data.contentSnippet || parsed.data.content || null;
+
+        if (FULLTEXT_SOURCES.has(source)) {
+          const full = await extractFullText(linkUnwrapped);
+          if (full && full.length > 200) {
+            content = full;
           } else {
-            continue; // still too weak → drop
+            if (!content || content.trim().length < 120) continue;
+          }
+        } else {
+          if (!content || content.trim().length < 120) {
+            const maybeFull = await extractFullText(linkUnwrapped);
+            if (maybeFull && maybeFull.length > 200) {
+              content = maybeFull;
+            } else {
+              continue;
+            }
           }
         }
-      }
 
-      // Upsert article by URL (url is UNIQUE)
-      const { data: articleRow, error: upErr } = await supabaseAdmin
-        .from("articles")
-        .upsert(
-          [
+        const { data: articleRow, error: upErr } = await supabaseAdmin
+          .from("articles")
+          .upsert(
+            [
+              {
+                url: linkUnwrapped,
+                domain,
+                title,
+                published_at: published_at as any,
+                content,
+                hash,
+                language: null,
+                status: "processed",
+                source,
+              },
+            ],
+            { onConflict: "url" }
+          )
+          .select("id")
+          .single();
+
+        if (upErr) {
+          errors.push({ source, error: upErr.message });
+          continue;
+        }
+
+        articlesUpserted += 1;
+        const articleId = articleRow!.id as string;
+
+        const { error: linkErr } = await supabaseAdmin
+          .from("cluster_members")
+          .upsert(
+            [{ cluster_id: clusterId, article_id: articleId, score: 1 }],
             {
-              url: linkUnwrapped,
-              domain,
-              title,
-              published_at: published_at as any,
-              content,
-              hash,
-              language: null,
-              status: "processed",
-              source,
-            },
-          ],
-          { onConflict: "url" }
-        )
-        .select("id")
-        .single();
+              onConflict: "cluster_id,article_id",
+            }
+          )
+          .select("article_id")
+          .single();
 
-      if (upErr) {
-        errors.push({ source, error: upErr.message });
-        continue;
-      }
-
-      articlesUpserted += 1;
-      const articleId = articleRow!.id as string;
-
-      // Link article to today’s cluster (idempotent on PK)
-      const { error: linkErr } = await supabaseAdmin
-        .from("cluster_members")
-        .upsert([{ cluster_id: clusterId, article_id: articleId, score: 1 }], {
-          onConflict: "cluster_id,article_id",
-        })
-        .select("article_id")
-        .single();
-
-      if (linkErr) {
-        errors.push({ source, error: linkErr.message });
-      } else {
-        linksUpserted += 1;
+        if (linkErr) {
+          errors.push({ source, error: linkErr.message });
+        } else {
+          linksUpserted += 1;
+        }
+      } catch (err: any) {
+        console.error("[ingest:item] error", source, err?.message || err);
+        errors.push({ source, error: String(err?.message || err) });
+        // continue loop
       }
     }
   }
