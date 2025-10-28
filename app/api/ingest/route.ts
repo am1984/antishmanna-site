@@ -41,6 +41,16 @@ function unwrapGoogleNewsLink(link: string): string {
   return link;
 }
 
+function stripHtmlToText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<\/?(?:nav|header|footer|aside|noscript)[^>]*>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function extractFullText(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
@@ -48,13 +58,16 @@ async function extractFullText(url: string): Promise<string | null> {
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) antishmanna-site/1.0",
         Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "en-GB,en;q=0.8",
       },
       cache: "no-store",
       redirect: "follow",
     });
     if (!res.ok) return null;
 
+    // Cap HTML size to avoid OOM on very heavy pages
     const html = await res.text();
+    const safeHtml = html.length > 2_500_000 ? html.slice(0, 2_500_000) : html;
 
     // Lazy import to reduce bundle size / avoid edge conflicts
     const [{ JSDOM }, { Readability }] = await Promise.all([
@@ -62,11 +75,16 @@ async function extractFullText(url: string): Promise<string | null> {
       import("@mozilla/readability"),
     ]);
 
-    const dom = new JSDOM(html, { url });
+    const dom = new JSDOM(safeHtml, { url });
     const article = new Readability(dom.window.document).parse();
-    if (!article?.textContent) return null;
+    let text = article?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 
-    return article.textContent.replace(/\s+/g, " ").trim();
+    // Fallback: crude HTML→text if Readability yields nothing
+    if (!text || text.length < 200) {
+      text = stripHtmlToText(safeHtml);
+    }
+
+    return text && text.length >= 200 ? text : null;
   } catch (err) {
     console.error("[extractFullText] error", url, err);
     return null;
@@ -79,12 +97,12 @@ const FULLTEXT_SOURCES = new Set(["Reuters", "AP News", "Bloomberg"]);
 // Optional: guard that Google News items truly come from the expected domain.
 function domainMatchesExpected(url: string, source: string): boolean {
   try {
-    const h = new URL(url).hostname;
+    const h = new URL(url).hostname.replace(/^www\./, "");
     if (source === "Reuters") return h.endsWith("reuters.com");
     if (source === "AP News") return h.endsWith("apnews.com");
     if (source === "Bloomberg") return h.endsWith("bloomberg.com");
   } catch {}
-  return true; // be permissive for others
+  return true;
 }
 
 // Liberal RSS item schema (feeds vary)
@@ -216,20 +234,28 @@ async function runIngestion() {
         // Content policy (hybrid)
         let content = parsed.data.contentSnippet || parsed.data.content || null;
 
+        // Thresholds
+        const MIN_SNIPPET = 40; // accept short but non-trivial snippets
+        const MIN_FULLTEXT = 200; // require decent body for full-text
+
         if (FULLTEXT_SOURCES.has(source)) {
           const full = await extractFullText(linkUnwrapped);
-          if (full && full.length > 200) {
+          if (full && full.length >= MIN_FULLTEXT) {
             content = full;
           } else {
-            if (!content || content.trim().length < 120) continue;
+            // Fallback: accept snippet if it's at least MIN_SNIPPET chars
+            if (!content || content.trim().length < MIN_SNIPPET) {
+              continue; // still too weak → drop
+            }
           }
         } else {
-          if (!content || content.trim().length < 120) {
+          // Native RSS first; if too thin, try full-text once
+          if (!content || content.trim().length < MIN_SNIPPET) {
             const maybeFull = await extractFullText(linkUnwrapped);
-            if (maybeFull && maybeFull.length > 200) {
+            if (maybeFull && maybeFull.length >= MIN_FULLTEXT) {
               content = maybeFull;
             } else {
-              continue;
+              continue; // no luck
             }
           }
         }
