@@ -231,33 +231,33 @@ async function runIngestion() {
           if (ageMs > TWELVE_HOURS) continue;
         }
 
-        // Content policy (hybrid)
+        // --- thresholds & helpers ---
+        const MIN_FULLTEXT = 200;
+
+        // Start with whatever the feed provides (can be short!)
         let content = parsed.data.contentSnippet || parsed.data.content || null;
 
-        // Thresholds
-        const MIN_SNIPPET = 40; // accept short but non-trivial snippets
-        const MIN_FULLTEXT = 200; // require decent body for full-text
-
         if (FULLTEXT_SOURCES.has(source)) {
+          // For Reuters/AP/Bloomberg we KEEP the RSS snippet no matter how short,
+          // and only try to UPGRADE to full text (never drop because it's short).
           const full = await extractFullText(linkUnwrapped);
           if (full && full.length >= MIN_FULLTEXT) {
             content = full;
-          } else {
-            // Fallback: accept snippet if it's at least MIN_SNIPPET chars
-            if (!content || content.trim().length < MIN_SNIPPET) {
-              continue; // still too weak → drop
-            }
           }
         } else {
-          // Native RSS first; if too thin, try full-text once
-          if (!content || content.trim().length < MIN_SNIPPET) {
+          // For native RSS sources (BBC/Politico), if snippet is very thin,
+          // try one full-text extraction as a fallback; otherwise keep snippet.
+          if (!content || content.trim().length < 40) {
             const maybeFull = await extractFullText(linkUnwrapped);
             if (maybeFull && maybeFull.length >= MIN_FULLTEXT) {
               content = maybeFull;
-            } else {
-              continue; // no luck
             }
           }
+        }
+
+        // Final guard: if there's still nothing at all, as a last resort keep title
+        if (!content || !content.trim()) {
+          content = title || "(no summary)";
         }
 
         const { data: articleRow, error: upErr } = await supabaseAdmin
