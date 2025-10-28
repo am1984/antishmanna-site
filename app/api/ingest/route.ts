@@ -310,7 +310,7 @@ async function runIngestion() {
         // continue loop
       }
     }
-  }
+  };
 
   return { ok: true, clusterId, articlesUpserted, linksUpserted, errors };
 }
