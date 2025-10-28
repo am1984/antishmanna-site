@@ -209,7 +209,7 @@ async function runIngestion() {
 
         const rawLink = parsed.data.link.trim();
         const linkUnwrapped = unwrapGoogleNewsLink(rawLink);
-        if (!domainMatchesExpected(linkUnwrapped, source)) continue;
+        // if (!domainMatchesExpected(linkUnwrapped, source)) continue;
 
         const domain = getDomain(linkUnwrapped);
         const hash = urlHash(linkUnwrapped);
@@ -243,7 +243,6 @@ async function runIngestion() {
           const full = await extractFullText(linkUnwrapped);
           if (full && full.length >= MIN_FULLTEXT) {
             content = full;
-          }
         } else {
           // For native RSS sources (BBC/Politico), if snippet is very thin,
           // try one full-text extraction as a fallback; otherwise keep snippet.
