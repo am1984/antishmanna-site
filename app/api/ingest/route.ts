@@ -173,8 +173,6 @@ async function runIngestion() {
       const content = parsed.data.contentSnippet || parsed.data.content || null;
       if (!content || content.trim().length < 5) continue;
 
-      const content = parsed.data.contentSnippet || parsed.data.content || null;
-
       // Upsert article by URL (url is UNIQUE)
       const { data: articleRow, error: upErr } = await supabaseAdmin
         .from("articles")
