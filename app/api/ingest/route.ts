@@ -15,8 +15,6 @@ import { formatISO, parseISO } from "date-fns";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // server-only client
 import { FEEDS } from "@/lib/feeds";
 import { getDomain, urlHash } from "@/lib/url";
-import { JSDOM } from "jsdom";
-import { Readability } from "@mozilla/readability";
 
 // ─────────────────────────────────────────────────────────
 // Optional auth: set CRON_SECRET in Vercel → Settings → Environment Variables
@@ -28,7 +26,7 @@ function isAuthorized(req: Request) {
 }
 
 // ─────────────────────────────────────────────────────────
-// Helpers: Google News unwrap + full-text extraction
+// Helpers: Google News unwrap + text extraction
 // ─────────────────────────────────────────────────────────
 function unwrapGoogleNewsLink(link: string): string {
   try {
@@ -51,6 +49,7 @@ function stripHtmlToText(html: string): string {
     .trim();
 }
 
+// Lazy-import jsdom + readability inside the function to reduce bundle size
 async function extractFullText(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
@@ -69,7 +68,7 @@ async function extractFullText(url: string): Promise<string | null> {
     const html = await res.text();
     const safeHtml = html.length > 2_500_000 ? html.slice(0, 2_500_000) : html;
 
-    // Lazy import to reduce bundle size / avoid edge conflicts
+    // Lazy import to avoid edge bundling and reduce cold start size
     const [{ JSDOM }, { Readability }] = await Promise.all([
       import("jsdom"),
       import("@mozilla/readability"),
@@ -102,7 +101,7 @@ function domainMatchesExpected(url: string, source: string): boolean {
     if (source === "AP News") return h.endsWith("apnews.com");
     if (source === "Bloomberg") return h.endsWith("bloomberg.com");
   } catch {}
-  return true;
+  return true; // be permissive for others
 }
 
 // Liberal RSS item schema (feeds vary)
@@ -209,6 +208,8 @@ async function runIngestion() {
 
         const rawLink = parsed.data.link.trim();
         const linkUnwrapped = unwrapGoogleNewsLink(rawLink);
+
+        // Temporarily relaxed; re-enable after confirming flow:
         // if (!domainMatchesExpected(linkUnwrapped, source)) continue;
 
         const domain = getDomain(linkUnwrapped);
@@ -243,6 +244,7 @@ async function runIngestion() {
           const full = await extractFullText(linkUnwrapped);
           if (full && full.length >= MIN_FULLTEXT) {
             content = full;
+          }
         } else {
           // For native RSS sources (BBC/Politico), if snippet is very thin,
           // try one full-text extraction as a fallback; otherwise keep snippet.
@@ -310,7 +312,7 @@ async function runIngestion() {
         // continue loop
       }
     }
-  };
+  }
 
   return { ok: true, clusterId, articlesUpserted, linksUpserted, errors };
 }
