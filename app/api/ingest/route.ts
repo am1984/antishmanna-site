@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 // Imports
 // ─────────────────────────────────────────────────────────
 import Parser from "rss-parser";
-import { z } from "zod";
+import { lte, z } from "zod";
 import { formatISO, parseISO } from "date-fns";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // server-only client
 import { FEEDS } from "@/lib/feeds";
@@ -49,21 +49,43 @@ function stripHtmlToText(html: string): string {
     .trim();
 }
 
+// Fix mojibake like "â€™ â€œ â€” Ã©" → proper UTF-8
+function fixMojibake(text: string): string {
+  if (!text) return text;
+  try {
+    // Heuristic: only run the expensive conversion if we see tell-tale bytes
+    if (/[ÂÃâ€]/.test(text)) {
+      // Convert as if the string was mis-decoded Latin-1
+      const fixed = Buffer.from(text, "latin1").toString("utf8");
+      if (fixed && fixed !== text) return fixed;
+    }
+  } catch {}
+  return text;
+}
+
+// Clean trailing publisher artifacts + whitespace and normalize spaces
 function cleanContent(text: string): string {
   if (!text) return text;
 
-  return (
-    text
-      // Remove common Google News / wire attribution remnants
-      .replace(/¬†/g, " ") // strip weird nbsp-like characters
-      .replace(/\s+AP News\s*$/i, "") // drop trailing "AP News"
-      .replace(/\s+Reuters\s*$/i, "") // drop trailing "Reuters"
-      .replace(/\s+Bloomberg\s*$/i, "") // drop trailing "Bloomberg"
-      .replace(/\s+The Associated Press\s*$/i, "")
-      // Collapse repeated spaces
-      .replace(/\s+/g, " ")
-      .trim()
-  );
+  // Normalize NBSP/zero-width and common junk
+  let t = text
+    .replace(/\u00A0/g, " ")
+    .replace(/\u200B/g, "")
+    .replace(/¬†/g, " ");
+
+  // Remove Google News trailing attributions
+  t = t
+    .replace(
+      /\s+(?:AP News|Reuters|Bloomberg\.?com?|The Associated Press)\s*$/i,
+      ""
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Run mojibake fix last (it can introduce double spaces)
+  t = fixMojibake(t).replace(/\s+/g, " ").trim();
+
+  return t;
 }
 
 // Lazy-import jsdom + readability inside the function to reduce bundle size
@@ -231,7 +253,8 @@ async function runIngestion() {
 
         const domain = getDomain(linkUnwrapped);
         const hash = urlHash(linkUnwrapped);
-        const title = parsed.data.title ?? null;
+        let title = parsed.data.title ?? null;
+        if (title) title = cleanContent(title);
 
         // timestamps
         const ts = parsed.data.isoDate ?? parsed.data.pubDate ?? null;
@@ -280,6 +303,11 @@ async function runIngestion() {
 
         // Clean artifacts (Google News trailing "AP News", "Reuters", etc.)
         content = cleanContent(content);
+
+        // Drop very short items (change 70 to whatever threshold you like)
+        if (content.length < 70) {
+          continue;
+        }
 
         const { data: articleRow, error: upErr } = await supabaseAdmin
           .from("articles")
