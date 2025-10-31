@@ -15,6 +15,7 @@ import { formatISO, parseISO } from "date-fns";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // server-only client
 import { FEEDS } from "@/lib/feeds";
 import { getDomain, urlHash } from "@/lib/url";
+import { franc } from "franc";
 
 // ─────────────────────────────────────────────────────────
 // Optional auth: set CRON_SECRET in Vercel → Settings → Environment Variables
@@ -49,41 +50,60 @@ function stripHtmlToText(html: string): string {
     .trim();
 }
 
-// Fix mojibake like "â€™ â€œ â€” Ã©" → proper UTF-8
+// Fix mojibake (UTF-8 read as Latin-1) such as â€™, â€œ, Ã© etc.
 function fixMojibake(text: string): string {
   if (!text) return text;
+
+  // Convert common UTF-8 → Windows-1252 mojibake
+  const map: Record<string, string> = {
+    "â€™": "’",
+    "â€˜": "‘",
+    "â€œ": "“",
+    "â€": "”",
+    "â€": "—", // sometimes em dash
+    "â€“": "–",
+    "Ã©": "é",
+    Ã: "à",
+    Â: "",
+  };
+
+  let t = text;
+  for (const bad in map) {
+    t = t.replace(new RegExp(bad, "g"), map[bad]);
+  }
+
+  // Also fix cases where the text was decoded Latin-1 instead of UTF-8
   try {
-    // Heuristic: only run the expensive conversion if we see tell-tale bytes
-    if (/[ÂÃâ€]/.test(text)) {
-      // Convert as if the string was mis-decoded Latin-1
-      const fixed = Buffer.from(text, "latin1").toString("utf8");
-      if (fixed && fixed !== text) return fixed;
+    if (/[ÂÃâ€]/.test(t)) {
+      const repaired = Buffer.from(t, "latin1").toString("utf8");
+      if (repaired && repaired !== t) t = repaired;
     }
   } catch {}
-  return text;
+
+  return t;
 }
 
-// Clean trailing publisher artifacts + whitespace and normalize spaces
 function cleanContent(text: string): string {
   if (!text) return text;
 
-  // Normalize NBSP/zero-width and common junk
   let t = text
-    .replace(/\u00A0/g, " ")
-    .replace(/\u200B/g, "")
-    .replace(/¬†/g, " ");
+    .replace(/\u00A0/g, " ") // NBSP
+    .replace(/\u200B/g, "") // zero width
+    .replace(/¬†/g, " "); // Google News artifact
 
-  // Remove Google News trailing attributions
+  // Strip trailing attributions
   t = t
     .replace(
-      /\s+(?:AP News|Reuters|Bloomberg\.?com?|The Associated Press)\s*$/i,
+      /\s+(AP News|Reuters|Bloomberg\.?com?|The Associated Press)\s*$/i,
       ""
     )
-    .replace(/\s+/g, " ")
     .trim();
 
-  // Run mojibake fix last (it can introduce double spaces)
-  t = fixMojibake(t).replace(/\s+/g, " ").trim();
+  // Fix mojibake
+  t = fixMojibake(t);
+
+  // Normalize spacing
+  t = t.replace(/\s+/g, " ").trim();
 
   return t;
 }
@@ -308,6 +328,10 @@ async function runIngestion() {
         if (content.length < 70) {
           continue;
         }
+
+        // Language filter (skip non-English)
+        const lang = franc(content);
+        if (lang !== "eng" && lang !== "und") continue;
 
         const { data: articleRow, error: upErr } = await supabaseAdmin
           .from("articles")
