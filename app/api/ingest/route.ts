@@ -49,6 +49,23 @@ function stripHtmlToText(html: string): string {
     .trim();
 }
 
+function cleanContent(text: string): string {
+  if (!text) return text;
+
+  return (
+    text
+      // Remove common Google News / wire attribution remnants
+      .replace(/¬†/g, " ") // strip weird nbsp-like characters
+      .replace(/\s+AP News\s*$/i, "") // drop trailing "AP News"
+      .replace(/\s+Reuters\s*$/i, "") // drop trailing "Reuters"
+      .replace(/\s+Bloomberg\s*$/i, "") // drop trailing "Bloomberg"
+      .replace(/\s+The Associated Press\s*$/i, "")
+      // Collapse repeated spaces
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
 // Lazy-import jsdom + readability inside the function to reduce bundle size
 async function extractFullText(url: string): Promise<string | null> {
   try {
@@ -260,6 +277,9 @@ async function runIngestion() {
         if (!content || !content.trim()) {
           content = title || "(no summary)";
         }
+
+        // Clean artifacts (Google News trailing "AP News", "Reuters", etc.)
+        content = cleanContent(content);
 
         const { data: articleRow, error: upErr } = await supabaseAdmin
           .from("articles")
