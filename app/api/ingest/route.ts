@@ -183,29 +183,6 @@ const parser = new Parser({
   },
 });
 
-// Helper: ensure a “today” cluster exists and return its id
-async function ensureTodayCluster(): Promise<string> {
-  const today = formatISO(new Date(), { representation: "date" }); // YYYY-MM-DD
-
-  const { data: found, error: selErr } = await supabaseAdmin
-    .from("clusters")
-    .select("id")
-    .eq("cluster_date", today)
-    .limit(1);
-
-  if (selErr) throw selErr;
-  if (found?.[0]?.id) return found[0].id as string;
-
-  const { data: inserted, error: insErr } = await supabaseAdmin
-    .from("clusters")
-    .insert([{ cluster_date: today, label: "Top stories" }])
-    .select("id")
-    .single();
-
-  if (insErr) throw insErr;
-  return inserted!.id as string;
-}
-
 async function fetchFeed(name: string, url: string, retries = 2) {
   const headers: Record<string, string> = {
     "User-Agent":
@@ -241,15 +218,12 @@ async function fetchFeed(name: string, url: string, retries = 2) {
 
 // Core ingestion runner
 async function runIngestion() {
-  const clusterId = await ensureTodayCluster();
-
   // Pull all feeds in parallel; a failure in one won’t kill the run
   const results = await Promise.allSettled(
     FEEDS.map((f) => fetchFeed(f.name, f.url))
   );
 
   let articlesUpserted = 0;
-  let linksUpserted = 0;
   const errors: Array<{ source: string; error: string }> = [];
 
   for (const r of results) {
@@ -361,23 +335,6 @@ async function runIngestion() {
 
         articlesUpserted += 1;
         const articleId = articleRow!.id as string;
-
-        const { error: linkErr } = await supabaseAdmin
-          .from("cluster_members")
-          .upsert(
-            [{ cluster_id: clusterId, article_id: articleId, score: 1 }],
-            {
-              onConflict: "cluster_id,article_id",
-            }
-          )
-          .select("article_id")
-          .single();
-
-        if (linkErr) {
-          errors.push({ source, error: linkErr.message });
-        } else {
-          linksUpserted += 1;
-        }
       } catch (err: any) {
         console.error("[ingest:item] error", source, err?.message || err);
         errors.push({ source, error: String(err?.message || err) });
@@ -386,7 +343,7 @@ async function runIngestion() {
     }
   }
 
-  return { ok: true, clusterId, articlesUpserted, linksUpserted, errors };
+  return { ok: true, articlesUpserted, errors };
 }
 
 // Handlers (Vercel Cron calls GET)
