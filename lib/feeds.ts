@@ -36,8 +36,12 @@ export const FEEDS: Feed[] = [
     url: "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",
   },
   {
-    name: "WSJ Markets Main",
+    name: "WSJ Markets News",
     url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain",
+  },
+  {
+    name: "WSJ Economy News",
+    url: "https://feeds.content.dowjones.io/public/rss/socialeconomyfeed",
   },
 
   // CNBC sections
@@ -46,7 +50,7 @@ export const FEEDS: Feed[] = [
     url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
   },
   {
-    name: "CNBC Investing",
+    name: "CNBC Investing News",
     url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
   },
 
