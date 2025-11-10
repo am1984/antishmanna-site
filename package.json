@@ -9,8 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^2.0.64",
     "@mozilla/readability": "^0.6.0",
     "@supabase/supabase-js": "^2.76.1",
+    "ai": "^5.0.90",
     "date-fns": "^4.1.0",
     "franc": "^6.2.0",
     "jsdom": "^27.0.1",
