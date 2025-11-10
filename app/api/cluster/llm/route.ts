@@ -423,6 +423,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         ok: true,
+        modelUsed: MODEL,
         runId,
         windowStart: windowStart.toISOString(),
         windowEnd: windowEnd.toISOString(),
