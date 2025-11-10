@@ -1,4 +1,6 @@
 // app/api/cluster/llm/route.ts
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
@@ -19,10 +21,10 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 // -------------------------------
 const MODEL = process.env.NEWS_CLUSTER_MODEL || "gpt-5-mini";
 const TEMPERATURE = 0;
-const DEFAULT_WINDOW_HOURS = 21;
+const DEFAULT_WINDOW_HOURS = 12;
 const DEFAULT_TOP_N = 8;
 
-// Optional cost tracking (set envs if you want non-zero)
+// Optional cost tracking (set envs to non-zero if you want)
 const PRICE_IN_PER_1K = Number(process.env.NEWS_MODEL_PRICE_IN_PER_1K ?? 0);
 const PRICE_OUT_PER_1K = Number(process.env.NEWS_MODEL_PRICE_OUT_PER_1K ?? 0);
 
@@ -35,6 +37,23 @@ type ArticleRow = {
   source: string | null;
   published_at: string | null;
   content: string | null;
+};
+
+type LLMCluster = {
+  topic_label: string;
+  member_ids: string[];
+  market_impact_score: number;
+  size: number;
+  sources_count: number;
+  freshness_score: number;
+  breaking: boolean;
+  total_score: number;
+  rank: number; // 1..N
+};
+
+type LLMResponse = {
+  clusters: LLMCluster[];
+  top_summaries: { cluster_rank: number; summary: string }[];
 };
 
 function startOfDayInTZ(date: Date, timeZone = "Europe/London") {
@@ -68,7 +87,8 @@ function safeNumber(n: unknown, fallback = 0) {
 }
 
 // -------------------------------
-/** Prompt builder reflecting your “embedding + agglomerative” intent and output shape */
+// Prompt builder (embeddings + agglomerative intent, ≤50-word summaries)
+// -------------------------------
 function buildPrompt(
   articles: ArticleRow[],
   opts?: {
@@ -79,6 +99,7 @@ function buildPrompt(
   }
 ) {
   const topN = Math.max(1, Math.min(12, opts?.topN ?? DEFAULT_TOP_N));
+
   const listing = articles
     .filter((a) => a.title && a.title.trim().length > 0)
     .map((a) => {
@@ -152,7 +173,7 @@ Return a single JSON object with two arrays:
   ],
   "top_summaries": [
     {
-      "cluster_rank": 0,                 // rank value of the cluster being summarised (1..N)
+      "cluster_rank": 0,                 // rank of the cluster being summarised (1..N)
       "summary": "≤50 words"
     }
   ]
@@ -171,26 +192,6 @@ ARTICLES
 ${listing}
   `.trim();
 }
-
-// -------------------------------
-// Types matching LLM output
-// -------------------------------
-type LLMCluster = {
-  topic_label: string;
-  member_ids: string[];
-  market_impact_score: number;
-  size: number;
-  sources_count: number;
-  freshness_score: number;
-  breaking: boolean;
-  total_score: number;
-  rank: number; // 1..N
-};
-
-type LLMResponse = {
-  clusters: LLMCluster[];
-  top_summaries: { cluster_rank: number; summary: string }[];
-};
 
 // -------------------------------
 // Handler
@@ -241,15 +242,14 @@ export async function POST(req: Request) {
     });
     const promptHash = hashPrompt(prompt);
 
-    // 3) LLM call
-    const response = await openai.responses.create({
+    // 3) LLM call (Chat Completions; JSON-only enforced by prompt)
+    const completion = await openai.chat.completions.create({
       model: MODEL,
       temperature: TEMPERATURE,
-      response_format: { type: "json_object" },
-      input: prompt,
+      messages: [{ role: "user", content: prompt }],
     });
 
-    const text = response.output_text ?? "";
+    const text = completion.choices?.[0]?.message?.content ?? "";
     let parsed: LLMResponse;
     try {
       parsed = JSON.parse(text) as LLMResponse;
@@ -300,7 +300,7 @@ export async function POST(req: Request) {
     if (runErr) throw runErr;
     const runId = runRow.id as string;
 
-    // 5) Insert clusters (fresh daily IDs) and build a map rank -> cluster_id
+    // 5) Insert clusters (fresh daily IDs) preserving order
     const { data: insertedClusters, error: cErr } = await supabase
       .from("clusters")
       .insert(
@@ -310,16 +310,9 @@ export async function POST(req: Request) {
 
     if (cErr) throw cErr;
 
-    // Map topic_label -> inserted id (labels may repeat theoretically; prefer index order)
-    const labelToId = new Map<string, string>();
-    for (let i = 0; i < (insertedClusters || []).length; i++) {
-      const row = insertedClusters![i];
-      labelToId.set(row.label ?? `__idx_${i}`, row.id);
-    }
-
-    // Use order of clusters to map correctly (avoid label collisions)
-    const clusterIdByRank = new Map<number, string>();
+    // Map insertion order back to clusters order (avoid label collision issues)
     const clusterIdByIndex: string[] = [];
+    const clusterIdByRank = new Map<number, string>();
     clusters.forEach((c, i) => {
       const insertedId = insertedClusters?.[i]?.id as string;
       clusterIdByIndex.push(insertedId);
@@ -364,8 +357,7 @@ export async function POST(req: Request) {
       if (cirErr) throw cirErr;
     }
 
-    // 8) Insert top_daily_clusters from top_summaries (cluster_rank → rank)
-    // If top_summaries is empty, fallback to top ranks 1..top
+    // 8) Insert top_daily_clusters from top_summaries (fallback to top ranks)
     const topRanks =
       topSummaries.length > 0
         ? topSummaries
@@ -393,23 +385,16 @@ export async function POST(req: Request) {
     }
 
     // 9) Insert summaries for the Top-N (≤50 words each)
-    // Pull token usage for cost estimate
-    const usage = (response as any)?.usage || (response as any)?.meta?.usage;
-    const tokensIn = safeNumber(usage?.input_tokens ?? usage?.prompt_tokens, 0);
-    const tokensOut = safeNumber(
-      usage?.output_tokens ?? usage?.completion_tokens,
-      0
-    );
+    const tokensIn = completion.usage?.prompt_tokens ?? 0;
+    const tokensOut = completion.usage?.completion_tokens ?? 0;
     const costEstimate =
       (tokensIn / 1000) * PRICE_IN_PER_1K +
       (tokensOut / 1000) * PRICE_OUT_PER_1K;
 
-    const summariesRows = (topSummaries.length > 0 ? topSummaries : [])
+    const summariesRows = topSummaries
       .map((s) => {
         const cid = clusterIdByRank.get(Number(s.cluster_rank));
         if (!cid) return null;
-        // hard limit to ~300 chars for UI safety even if ≤50 words was followed
-        const summaryText = trunc(s.summary, 300);
         return {
           run_id: runId,
           cluster_id: cid,
@@ -418,7 +403,7 @@ export async function POST(req: Request) {
           bullet_3: null,
           bullet_4: null,
           bullet_5: null,
-          summary_text: summaryText,
+          summary_text: trunc(s.summary, 300),
           model: MODEL,
           tokens_in: tokensIn || null,
           tokens_out: tokensOut || null,
@@ -434,7 +419,7 @@ export async function POST(req: Request) {
       if (sumErr) throw sumErr;
     }
 
-    // 10) Return debug payload
+    // 10) Response
     return NextResponse.json(
       {
         ok: true,

@@ -11,12 +11,13 @@
   "dependencies": {
     "@ai-sdk/openai": "^2.0.64",
     "@mozilla/readability": "^0.6.0",
-    "@supabase/supabase-js": "^2.76.1",
+    "@supabase/supabase-js": "^2.81.0",
     "ai": "^5.0.90",
     "date-fns": "^4.1.0",
     "franc": "^6.2.0",
     "jsdom": "^27.0.1",
     "next": "16.0.0",
+    "openai": "^6.8.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "rss-parser": "^3.13.0",
@@ -25,7 +26,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/jsdom": "^27.0.0",
-    "@types/node": "^20",
+    "@types/node": "^20.19.24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
