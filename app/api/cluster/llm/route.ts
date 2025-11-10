@@ -22,8 +22,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 function cleanModelEnv(v?: string | null) {
   return (v ?? "").trim().replace(/^["']/, "").replace(/["']$/, "");
 }
-const RAW_MODEL = cleanModelEnv(process.env.NEWS_CLUSTER_MODEL) || "gpt-5-mini";
-const MODEL = RAW_MODEL; // single source of truth
+const MODEL = process.env.NEWS_CLUSTER_MODEL || "gpt-5";
+const TEMPERATURE = 0;
 
 // If your route should be protected for cron/scheduler calls, set CRON_SECRET in env.
 // When set, this header must match: x-cron-secret: <CRON_SECRET>
@@ -34,19 +34,6 @@ const DEFAULT_TOP_N = 8;
 // Optional cost tracking (set envs to non-zero if you want estimates)
 const PRICE_IN_PER_1K = Number(process.env.NEWS_MODEL_PRICE_IN_PER_1K ?? 0);
 const PRICE_OUT_PER_1K = Number(process.env.NEWS_MODEL_PRICE_OUT_PER_1K ?? 0);
-
-// Some models reject explicit temperature; gate it.
-function modelSupportsTemperature(model: string) {
-  // Keep conservative: allow explicit temperature only on families known to accept it.
-  return (
-    model.startsWith("gpt-5") ||
-    model.startsWith("gpt-4o") ||
-    model.startsWith("gpt-4.1") ||
-    model.startsWith("gpt-4")
-  );
-}
-const INCLUDE_TEMPERATURE = modelSupportsTemperature(MODEL);
-const TEMPERATURE_VALUE = 0; // desired when supported
 
 // -------------------------------
 // Types
@@ -280,12 +267,17 @@ export async function POST(req: Request) {
     });
     const promptHash = hashPrompt(prompt);
 
-    // 3) LLM call (Chat Completions; omit temperature when unsupported)
+    // 3) LLM call (Chat Completions; deterministic for gpt-5)
     console.log("cluster/llm using model:", MODEL);
+
     const completion = await openai.chat.completions.create({
-      model: MODEL,
-      ...(INCLUDE_TEMPERATURE ? { temperature: TEMPERATURE_VALUE } : {}),
-      messages: [{ role: "user", content: prompt }],
+      model: MODEL, // should resolve to "gpt-5"
+      temperature: 0, // deterministic clustering
+      response_format: { type: "json_object" }, // forces well-formed JSON
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: prompt },
+      ],
     });
 
     const text = completion.choices?.[0]?.message?.content ?? "";
