@@ -329,11 +329,23 @@ export async function POST(req: Request) {
     if (runErr) throw runErr;
     const runId = runRow.id as string;
 
+    // after you've computed runDate and runDateStr once
+    const runDateStr = new Date(
+      runDate.getFullYear(),
+      runDate.getMonth(),
+      runDate.getDate()
+    )
+      .toISOString()
+      .slice(0, 10); // "YYYY-MM-DD"
+
     // 5) Insert clusters (fresh daily IDs) preserving order
     const { data: insertedClusters, error: cErr } = await supabase
       .from("clusters")
       .insert(
-        clusters.map((c) => ({ label: c.topic_label?.slice(0, 80) || null }))
+        clusters.map((c) => ({
+          label: c.topic_label?.slice(0, 80) || null,
+          cluster_date: runDateStr, // ✅ REQUIRED by your schema
+        }))
       )
       .select("id, label");
 
