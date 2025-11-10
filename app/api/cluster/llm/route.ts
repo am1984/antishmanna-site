@@ -17,19 +17,39 @@ const supabase = createClient(
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // -------------------------------
-// Config
+// Config & Guards
 // -------------------------------
-const MODEL = process.env.NEWS_CLUSTER_MODEL || "gpt-5-mini";
-const TEMPERATURE = 0;
+function cleanModelEnv(v?: string | null) {
+  return (v ?? "").trim().replace(/^["']/, "").replace(/["']$/, "");
+}
+const RAW_MODEL = cleanModelEnv(process.env.NEWS_CLUSTER_MODEL) || "gpt-5-mini";
+const MODEL = RAW_MODEL; // single source of truth
+
+// If your route should be protected for cron/scheduler calls, set CRON_SECRET in env.
+// When set, this header must match: x-cron-secret: <CRON_SECRET>
+const CRON_REQUIRED = Boolean(process.env.CRON_SECRET);
 const DEFAULT_WINDOW_HOURS = 12;
 const DEFAULT_TOP_N = 8;
 
-// Optional cost tracking (set envs to non-zero if you want)
+// Optional cost tracking (set envs to non-zero if you want estimates)
 const PRICE_IN_PER_1K = Number(process.env.NEWS_MODEL_PRICE_IN_PER_1K ?? 0);
 const PRICE_OUT_PER_1K = Number(process.env.NEWS_MODEL_PRICE_OUT_PER_1K ?? 0);
 
+// Some models reject explicit temperature; gate it.
+function modelSupportsTemperature(model: string) {
+  // Keep conservative: allow explicit temperature only on families known to accept it.
+  return (
+    model.startsWith("gpt-5") ||
+    model.startsWith("gpt-4o") ||
+    model.startsWith("gpt-4.1") ||
+    model.startsWith("gpt-4")
+  );
+}
+const INCLUDE_TEMPERATURE = modelSupportsTemperature(MODEL);
+const TEMPERATURE_VALUE = 0; // desired when supported
+
 // -------------------------------
-// Helpers
+// Types
 // -------------------------------
 type ArticleRow = {
   id: string;
@@ -56,6 +76,9 @@ type LLMResponse = {
   top_summaries: { cluster_rank: number; summary: string }[];
 };
 
+// -------------------------------
+// Utils
+// -------------------------------
 function startOfDayInTZ(date: Date, timeZone = "Europe/London") {
   // Returns a Date representing 00:00:00 of 'date' in the given TZ, converted to UTC.
   const formatter = new Intl.DateTimeFormat("en-GB", {
@@ -87,7 +110,7 @@ function safeNumber(n: unknown, fallback = 0) {
 }
 
 // -------------------------------
-// Prompt builder (embeddings + agglomerative intent, ≤50-word summaries)
+// Prompt builder (embedding + agglomerative intent; ≤50-word summaries)
 // -------------------------------
 function buildPrompt(
   articles: ArticleRow[],
@@ -198,6 +221,17 @@ ${listing}
 // -------------------------------
 export async function POST(req: Request) {
   try {
+    // Optional cron header guard
+    if (CRON_REQUIRED) {
+      const header = req.headers.get("x-cron-secret");
+      if (!header || header !== process.env.CRON_SECRET) {
+        return NextResponse.json(
+          { ok: false, error: "unauthorized" },
+          { status: 401 }
+        );
+      }
+    }
+
     const { windowHours, topN } = await req
       .json()
       .catch(() => ({ windowHours: undefined, topN: undefined }));
@@ -228,7 +262,11 @@ export async function POST(req: Request) {
     ) as ArticleRow[];
     if (rows.length === 0) {
       return NextResponse.json(
-        { ok: true, message: "No articles in window; nothing to cluster." },
+        {
+          ok: true,
+          modelUsed: MODEL,
+          message: "No articles in window; nothing to cluster.",
+        },
         { status: 200 }
       );
     }
@@ -242,10 +280,11 @@ export async function POST(req: Request) {
     });
     const promptHash = hashPrompt(prompt);
 
-    // 3) LLM call (Chat Completions; JSON-only enforced by prompt)
+    // 3) LLM call (Chat Completions; omit temperature when unsupported)
+    console.log("cluster/llm using model:", MODEL);
     const completion = await openai.chat.completions.create({
       model: MODEL,
-      temperature: TEMPERATURE,
+      ...(INCLUDE_TEMPERATURE ? { temperature: TEMPERATURE_VALUE } : {}),
       messages: [{ role: "user", content: prompt }],
     });
 
@@ -253,10 +292,11 @@ export async function POST(req: Request) {
     let parsed: LLMResponse;
     try {
       parsed = JSON.parse(text) as LLMResponse;
-    } catch (e) {
+    } catch {
       return NextResponse.json(
         {
           ok: false,
+          modelUsed: MODEL,
           error: "LLM returned invalid JSON.",
           raw: text.slice(0, 2000),
         },
@@ -270,7 +310,7 @@ export async function POST(req: Request) {
       : [];
     if (clusters.length === 0) {
       return NextResponse.json(
-        { ok: true, message: "LLM produced zero clusters." },
+        { ok: true, modelUsed: MODEL, message: "LLM produced zero clusters." },
         { status: 200 }
       );
     }
@@ -346,9 +386,7 @@ export async function POST(req: Request) {
       total_score: Number(c.total_score ?? 0),
       rank: Number(c.rank ?? null),
       derived_label: c.topic_label?.slice(0, 80) ?? null,
-      details: {
-        market_impact_score: Number(c.market_impact_score ?? 0),
-      },
+      details: { market_impact_score: Number(c.market_impact_score ?? 0) },
     }));
     if (cirRows.length > 0) {
       const { error: cirErr } = await supabase
@@ -384,7 +422,7 @@ export async function POST(req: Request) {
       if (topErr) throw topErr;
     }
 
-    // 9) Insert summaries for the Top-N (≤50 words each)
+    // 9) Insert summaries (≤50 words each)
     const tokensIn = completion.usage?.prompt_tokens ?? 0;
     const tokensOut = completion.usage?.completion_tokens ?? 0;
     const costEstimate =
@@ -427,7 +465,6 @@ export async function POST(req: Request) {
         runId,
         windowStart: windowStart.toISOString(),
         windowEnd: windowEnd.toISOString(),
-        model: MODEL,
         counts: {
           articles: rows.length,
           clusters_total: clusters.length,
