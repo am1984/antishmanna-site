@@ -272,7 +272,7 @@ export async function POST(req: Request) {
 
     const completion = await openai.chat.completions.create({
       model: MODEL, // should resolve to "gpt-5"
-      temperature: 0, // deterministic clustering
+      //temperature: 0, // deterministic clustering
       response_format: { type: "json_object" }, // forces well-formed JSON
       messages: [{ role: "user", content: prompt }],
     });
