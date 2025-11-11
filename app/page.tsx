@@ -130,6 +130,24 @@ export default async function Home() {
         </div>
       </section>
 
+      {/* Feature bullets */}
+      <section id="features" className="mx-auto max-w-6xl px-6 pb-20">
+        <div className="grid gap-6 md:grid-cols-3">
+          <Feature
+            title="Curated Sources"
+            desc="Top-tier financial news outlets only; paywall-safe links included every day."
+          />
+          <Feature
+            title="Eight Bullets"
+            desc="Top 8 market-moving news themes summarised; neutral, factual."
+          />
+          <Feature
+            title="Daily at 06:00 UK"
+            desc="Consistent cadence optimised for the morning routine."
+          />
+        </div>
+      </section>
+
       {/* Footer */}
       <footer id="contact" className="border-t border-white/10">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-10 text-sm text-white/60">
