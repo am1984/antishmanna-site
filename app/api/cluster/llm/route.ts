@@ -133,13 +133,13 @@ function buildPrompt(
   return `
 SYSTEM/TOOL INSTRUCTION (deterministic)
 - You are a news clustering-and-summarisation assistant, with excellent understanding of drivers that move financial markets.
-- Temperature = 0 (deterministic).
+- Temperature = 0
 - Embedding method = ext-embedding-3-small.
 - Clustering method:
   • Algorithm = Agglomerative Clustering
   • affinity = "precomputed" (cosine distance)
   • linkage = "average"
-  • distance_threshold ≈ 0.6
+  • distance_threshold = 0.6 (or similar)
 
 TASK
 Goal: Group these articles into topic clusters, rank clusters by how much they will move financial markets (largest impact ranked higher), then write a ≤50-word summary for each of the top ${topN} clusters.
@@ -152,17 +152,14 @@ Goal: Group these articles into topic clusters, rank clusters by how much they w
 
 2) Rank clusters by market impact
 • For each cluster, compute a primary "market_impact_score" in [0,1] = your estimate of how much this topic is likely to move financial markets.
-• Then compute "total_score" used for ranking with tie-breakers:
-  total_score = market_impact_score
-              + 0.4*log1p(cluster_size)
-              + 0.3*log1p(unique_sources)
-              + 0.5*freshness
+• Use the following tie-breaker logic in case there is a tie to determine the winner: 0.4*log1p(cluster_size) + 0.3*log1p(unique_sources) + 0.5*freshness
   where "freshness" is the normalized recency (0–1) of the newest article within the provided window.
 
 3) Summarise only the top ${topN} clusters
-• Take the top ${topN} clusters by total_score.
+• Take the top ${topN} clusters, based on market_impact_score and after applying tie-breaker logic
 • Read titles and SUMMARY_TEXT (title + first 400 chars of content) of members in that cluster.
-• Produce one ≤50-word factual, concise key-takeaway "summary" per selected cluster. No hype. No repetition.
+• Produce one ≤50-word key-takeaway "summary" per cluster. 
+• Be factual. No hype. No repetition.
 • Add some meta data at the end of the summary to concisely show cluster size, number of distinct sources and latest new date/time. Encapsulate the information within brackets, and use the same format.
 
 4) Output (JSON-only; no prose)
