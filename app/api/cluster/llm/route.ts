@@ -54,7 +54,6 @@ type LLMCluster = {
   sources_count: number;
   freshness_score: number;
   breaking: boolean;
-  total_score: number;
   rank: number; // 1..N
 };
 
@@ -175,8 +174,7 @@ Return a single JSON object with two arrays:
       "sources_count": 0,                // distinct sources in members
       "freshness_score": 0.0,            // 0–1 based on newest article in window
       "breaking": false,                 // true only if clearly a sudden development
-      "total_score": 0.0,                // formula above
-      "rank": 0                          // 1..N across ALL clusters (by total_score desc)
+      "rank": 0                          // using market_impact_score and tie breaker logic
     }
   ],
   "top_summaries": [
@@ -382,7 +380,6 @@ export async function POST(req: Request) {
       sources_count: c.sources_count ?? 0,
       breaking_flag: !!c.breaking,
       freshness_score: Number(c.freshness_score ?? 0),
-      total_score: Number(c.total_score ?? 0),
       rank: Number(c.rank ?? null),
       derived_label: c.topic_label?.slice(0, 80) ?? null,
       details: { market_impact_score: Number(c.market_impact_score ?? 0) },
@@ -410,9 +407,6 @@ export async function POST(req: Request) {
       run_id: runId,
       cluster_id: clusterIdByRank.get(rk)!,
       rank: rk,
-      total_score: Number(
-        clusters.find((c) => c.rank === rk)?.total_score ?? 0
-      ),
     }));
     if (topRows.length > 0) {
       const { error: topErr } = await supabase
@@ -435,11 +429,6 @@ export async function POST(req: Request) {
         return {
           run_id: runId,
           cluster_id: cid,
-          bullet_1: null,
-          bullet_2: null,
-          bullet_3: null,
-          bullet_4: null,
-          bullet_5: null,
           summary_text: trunc(s.summary, 300),
           model: MODEL,
           tokens_in: tokensIn || null,
