@@ -63,6 +63,7 @@ export default async function Home() {
       {/* Hero */}
       <section className="relative mx-auto max-w-6xl px-6 py-24 md:py-28">
         <div className="grid items-center gap-12 md:grid-cols-2">
+          {/* Left column: heading, copy, sources */}
           <div>
             <h1 className="text-4xl font-semibold leading-tight tracking-tight md:text-5xl">
               Daily Global News,
@@ -93,54 +94,39 @@ export default async function Home() {
               Sources include Bloomberg, Reuters, MarketWatch, CNBC and Yahoo
               Finance.
             </div>
+          </div>
 
-            {/* Glass card preview */}
-            <div className="mt-16 w-full max-w-4xl">
-              <div className="relative rounded-2xl border border-white/10 bg-white/5 p-5 shadow-2xl backdrop-blur">
-                <div className="absolute right-5 top-5 h-2 w-2 rounded-full bg-emerald-400" />
-                <p className="text-xs uppercase tracking-widest text-white/50">
-                  Today’s Brief
-                </p>
-                <h3 className="mt-2 text-lg font-medium text-white">
-                  Top stories at a glance
-                </h3>
-                <ul className="mt-4 space-y-3 text-sm text-white/80">
-                  {summaryBullets.map((b, i) => (
-                    <li key={i} className="flex gap-3">
-                      <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
-                      {b}
-                    </li>
-                  ))}
-                </ul>
-                <div className="mt-5 flex gap-3 text-xs text-white/60">
-                  <span className="rounded bg-white/10 px-2 py-1">US</span>
-                  <span className="rounded bg-white/10 px-2 py-1">Europe</span>
-                  <span className="rounded bg-white/10 px-2 py-1">Markets</span>
-                </div>
-                <div className="mt-6 flex justify-end text-xs text-white/50">
-                  Live preview
-                </div>
+          {/* (Optional) keep an empty right column for spacing on desktop */}
+          <div />
+
+          {/* Pane placed as its own grid item that spans both columns */}
+          <div className="mt-16 md:col-span-2 w-full">
+            <div className="relative rounded-2xl border border-white/10 bg-white/5 p-5 shadow-2xl backdrop-blur">
+              <div className="absolute right-5 top-5 h-2 w-2 rounded-full bg-emerald-400" />
+              <p className="text-xs uppercase tracking-widest text-white/50">
+                Today’s Brief
+              </p>
+              <h3 className="mt-2 text-lg font-medium text-white">
+                Top stories at a glance
+              </h3>
+              <ul className="mt-4 space-y-3 text-sm text-white/80">
+                {summaryBullets.map((b, i) => (
+                  <li key={i} className="flex gap-3">
+                    <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-[#1f6ad4]" />
+                    {b}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-5 flex gap-3 text-xs text-white/60">
+                <span className="rounded bg-white/10 px-2 py-1">US</span>
+                <span className="rounded bg-white/10 px-2 py-1">Europe</span>
+                <span className="rounded bg-white/10 px-2 py-1">Markets</span>
+              </div>
+              <div className="mt-6 flex justify-end text-xs text-white/50">
+                Live preview
               </div>
             </div>
           </div>
-        </div>
-      </section>
-
-      {/* Feature bullets */}
-      <section id="features" className="mx-auto max-w-6xl px-6 pb-20">
-        <div className="grid gap-6 md:grid-cols-3">
-          <Feature
-            title="Curated Sources"
-            desc="Top-tier financial news outlets only; paywall-safe links included every day."
-          />
-          <Feature
-            title="Eight Bullets"
-            desc="Top 8 market-moving news themes summarised; neutral, factual."
-          />
-          <Feature
-            title="Daily at 06:00 UK"
-            desc="Consistent cadence optimised for the morning routine."
-          />
         </div>
       </section>
 
