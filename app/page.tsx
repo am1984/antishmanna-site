@@ -5,44 +5,31 @@
 import { supabase } from "@/lib/supabase";
 
 export default async function Home() {
-  // Fetch today's clusters (top 1 for now)
-  const today = new Date().toISOString().slice(0, 10);
+  // Read top summaries for the latest run from the view
+  const { data: topSummaries } = await supabase
+    .from("latest_run_top_summaries")
+    .select("rank, summary_text")
+    .order("rank", { ascending: true })
+    .limit(8);
 
-  const { data: clusters } = await supabase
-    .from("daily_top_clusters")
-    .select("*")
-    .eq("cluster_date", today)
-    .order("articles_count", { ascending: false })
-    .limit(1);
+  // Build the 8 bullets (or fewer) directly from the view rows
+  let summaryBullets: string[] = (topSummaries ?? [])
+    .map((r: any) => r?.summary_text as string)
+    .filter(Boolean)
+    .slice(0, 8);
 
-  // If we have no cluster yet (e.g., first run), show placeholder bullets:
-  const cluster = clusters?.[0];
-
-  // Get summary if exists
-  let summaryBullets: string[] = [
-    "Fetching real data…",
-    "RSS ingestion pipeline not yet active.",
-    "Once active this card updates daily.",
-    "Clusters = groups of similar articles.",
-    "Summaries = 5 bullet executive view.",
-  ];
-
-  if (cluster) {
-    const { data: summaries } = await supabase
-      .from("summaries")
-      .select("*")
-      .eq("cluster_id", cluster.cluster_id)
-      .limit(1);
-
-    if (summaries?.[0]) {
-      summaryBullets = [
-        summaries[0].bullet_1,
-        summaries[0].bullet_2,
-        summaries[0].bullet_3,
-        summaries[0].bullet_4,
-        summaries[0].bullet_5,
-      ].filter(Boolean);
-    }
+  // Fallback placeholder if the view is empty
+  if (!summaryBullets.length) {
+    summaryBullets = [
+      "Fetching real data…",
+      "RSS ingestion pipeline not yet active.",
+      "Once active this card updates daily.",
+      "Clusters = groups of similar articles.",
+      "Summaries = 8‑bullet executive view.",
+      "Coverage: US, Europe, Markets…",
+      "Neutral tone, linkable sources.",
+      "Auto‑generated each morning.",
+    ];
   }
 
   return (
@@ -80,13 +67,13 @@ export default async function Home() {
             <h1 className="text-4xl font-semibold leading-tight tracking-tight md:text-5xl">
               Daily Global News,
               <span className="block text-transparent bg-clip-text bg-gradient-to-r from-[#1f6ad4] to-[#13a3d8]">
-                distilled into 5 essentials
+                distilled into 8 essentials
               </span>
             </h1>
             <p className="mt-5 max-w-xl text-base leading-relaxed text-white/70">
-              A modern briefing that cuts through noise. We scan reputable
-              outlets across the US & Europe and publish a five‑bullet executive
-              summary—every morning.
+              A modern briefing that cuts through noise. I systematically scan
+              reputable financial news outlets globally and publish an
+              eight-bullet executive summary every morning.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <a
@@ -103,7 +90,8 @@ export default async function Home() {
               </a>
             </div>
             <div className="mt-6 text-xs text-white/50">
-              Sources include BBC, Reuters, AP, NPR, Politico EU, DW, and more.
+              Sources include Bloomberg, Reuters, MarketWatch, CNBC and Yahoo
+              Finance.
             </div>
           </div>
 
@@ -131,7 +119,7 @@ export default async function Home() {
                 <span className="rounded bg-white/10 px-2 py-1">Markets</span>
               </div>
               <div className="mt-6 flex justify-end text-xs text-white/50">
-                Demo preview
+                Live preview
               </div>
             </div>
           </div>
@@ -143,15 +131,15 @@ export default async function Home() {
         <div className="grid gap-6 md:grid-cols-3">
           <Feature
             title="Curated Sources"
-            desc="Top-tier outlets only; paywall-safe links included every day."
+            desc="Top-tier financial news outlets only; paywall-safe links included every day."
           />
           <Feature
-            title="Five Bullets"
-            desc="Exactly five takeaways per story—concise, neutral, factual."
+            title="Eight Bullets"
+            desc="Top 8 market-moving news themes summarised; neutral, factual."
           />
           <Feature
             title="Daily at 06:00 UK"
-            desc="Consistent cadence optimised for your morning routine."
+            desc="Consistent cadence optimised for the morning routine."
           />
         </div>
       </section>
