@@ -25,10 +25,10 @@ export default async function Home() {
       "RSS ingestion pipeline not yet active.",
       "Once active this card updates daily.",
       "Clusters = groups of similar articles.",
-      "Summaries = 8‑bullet executive view.",
+      "Summaries = 8-bullet executive view.",
       "Coverage: US, Europe, Markets…",
       "Neutral tone, linkable sources.",
-      "Auto‑generated each morning.",
+      "Auto-generated each morning.",
     ];
   }
 
@@ -95,7 +95,7 @@ export default async function Home() {
             </div>
 
             {/* Glass card preview */}
-            <div className="md:pl-8">
+            <div className="mt-16 w-full max-w-4xl">
               <div className="relative rounded-2xl border border-white/10 bg-white/5 p-5 shadow-2xl backdrop-blur">
                 <div className="absolute right-5 top-5 h-2 w-2 rounded-full bg-emerald-400" />
                 <p className="text-xs uppercase tracking-widest text-white/50">
