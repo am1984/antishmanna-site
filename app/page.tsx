@@ -100,7 +100,7 @@ export default async function Home() {
           <div />
 
           {/* Pane placed as its own grid item that spans both columns */}
-          <div className="mt-4 md:col-span-2 w-full">
+          <div className="mt-3 md:col-span-2 w-full">
             <div className="relative rounded-2xl border border-white/10 bg-white/5 p-5 shadow-2xl backdrop-blur">
               <div className="absolute right-5 top-5 h-2 w-2 rounded-full bg-emerald-400" />
               <p className="text-xs uppercase tracking-widest text-white/50">
