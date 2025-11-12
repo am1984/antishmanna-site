@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 // Imports
 // ─────────────────────────────────────────────────────────
 import Parser from "rss-parser";
-import { z } from "zod";
-import { parseISO } from "date-fns";
+import { lte, z } from "zod";
+import { formatISO, parseISO } from "date-fns";
 import { supabaseAdmin } from "@/lib/supabaseAdmin"; // server-only client
 import { FEEDS } from "@/lib/feeds";
 import { getDomain, urlHash } from "@/lib/url";
@@ -24,45 +24,6 @@ function isAuthorized(req: Request) {
   const expected = process.env.CRON_SECRET;
   const got = req.headers.get("authorization") || "";
   return expected ? got === `Bearer ${expected}` : true; // allow if not set
-}
-
-// ─────────────────────────────────────────────────────────
-// AFTER-INGEST: trigger LLM clustering via internal API
-// ─────────────────────────────────────────────────────────
-async function triggerClusterLLM(origin: string) {
-  const url = `${origin.replace(/\/$/, "")}/api/cluster/llm`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (process.env.CRON_SECRET) {
-    headers["Authorization"] = `Bearer ${process.env.CRON_SECRET}`;
-  }
-
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 300_000); // 300s safety
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ trigger: "auto-after-ingest" }),
-      cache: "no-store",
-      signal: ctrl.signal,
-    });
-
-    let data: any = null;
-    try {
-      data = await res.json();
-    } catch {
-      // response might not be JSON; ignore
-    }
-
-    return { ok: res.ok, status: res.status, data };
-  } catch (err: any) {
-    return { ok: false, status: 0, error: String(err?.message || err) };
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -89,16 +50,17 @@ function stripHtmlToText(html: string): string {
     .trim();
 }
 
-// Fix mojibake (UTF-8 read as Latin-1)
+// Fix mojibake (UTF-8 read as Latin-1) such as â€™, â€œ, Ã© etc.
 function fixMojibake(text: string): string {
   if (!text) return text;
 
+  // Convert common UTF-8 → Windows-1252 mojibake
   const map: Record<string, string> = {
     "â€™": "’",
     "â€˜": "‘",
     "â€œ": "“",
     "â€": "”",
-    "â€": "—",
+    "â€": "—", // sometimes em dash
     "â€“": "–",
     "Ã©": "é",
     Ã: "à",
@@ -110,6 +72,7 @@ function fixMojibake(text: string): string {
     t = t.replace(new RegExp(bad, "g"), map[bad]);
   }
 
+  // Also fix cases where the text was decoded Latin-1 instead of UTF-8
   try {
     if (/[ÂÃâ€]/.test(t)) {
       const repaired = Buffer.from(t, "latin1").toString("utf8");
@@ -124,10 +87,11 @@ function cleanContent(text: string): string {
   if (!text) return text;
 
   let t = text
-    .replace(/\u00A0/g, " ")
-    .replace(/\u200B/g, "")
-    .replace(/¬†/g, " ");
+    .replace(/\u00A0/g, " ") // NBSP
+    .replace(/\u200B/g, "") // zero width
+    .replace(/¬†/g, " "); // Google News artifact
 
+  // Strip trailing attributions
   t = t
     .replace(
       /\s+(AP News|Reuters|Bloomberg\.?com?|The Associated Press)\s*$/i,
@@ -135,7 +99,10 @@ function cleanContent(text: string): string {
     )
     .trim();
 
+  // Fix mojibake
   t = fixMojibake(t);
+
+  // Normalize spacing
   t = t.replace(/\s+/g, " ").trim();
 
   return t;
@@ -156,9 +123,11 @@ async function extractFullText(url: string): Promise<string | null> {
     });
     if (!res.ok) return null;
 
+    // Cap HTML size to avoid OOM on very heavy pages
     const html = await res.text();
     const safeHtml = html.length > 2_500_000 ? html.slice(0, 2_500_000) : html;
 
+    // Lazy import to avoid edge bundling and reduce cold start size
     const [{ JSDOM }, { Readability }] = await Promise.all([
       import("jsdom"),
       import("@mozilla/readability"),
@@ -168,6 +137,7 @@ async function extractFullText(url: string): Promise<string | null> {
     const article = new Readability(dom.window.document).parse();
     let text = article?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 
+    // Fallback: crude HTML→text if Readability yields nothing
     if (!text || text.length < 200) {
       text = stripHtmlToText(safeHtml);
     }
@@ -190,7 +160,7 @@ function domainMatchesExpected(url: string, source: string): boolean {
     if (source === "AP News") return h.endsWith("apnews.com");
     if (source === "Bloomberg") return h.endsWith("bloomberg.com");
   } catch {}
-  return true;
+  return true; // be permissive for others
 }
 
 // Liberal RSS item schema (feeds vary)
@@ -232,11 +202,13 @@ async function fetchFeed(name: string, url: string, retries = 2) {
       if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
 
       const xml = await res.text();
+      // Some feeds include stray attributes / bad entities; let parser try from string
       const feed = await parser.parseString(xml);
 
       return { name, items: feed.items ?? [] };
     } catch (e) {
       lastErr = e;
+      // brief backoff on retryable errors
       await new Promise((r) => setTimeout(r, 600 * (i + 1)));
     }
   }
@@ -246,6 +218,7 @@ async function fetchFeed(name: string, url: string, retries = 2) {
 
 // Core ingestion runner
 async function runIngestion() {
+  // Pull all feeds in parallel; a failure in one won’t kill the run
   const results = await Promise.allSettled(
     FEEDS.map((f) => fetchFeed(f.name, f.url))
   );
@@ -269,6 +242,7 @@ async function runIngestion() {
         const rawLink = parsed.data.link.trim();
         const linkUnwrapped = unwrapGoogleNewsLink(rawLink);
 
+        // Temporarily relaxed; re-enable after confirming flow:
         // if (!domainMatchesExpected(linkUnwrapped, source)) continue;
 
         const domain = getDomain(linkUnwrapped);
@@ -276,6 +250,7 @@ async function runIngestion() {
         let title = parsed.data.title ?? null;
         if (title) title = cleanContent(title);
 
+        // timestamps
         const ts = parsed.data.isoDate ?? parsed.data.pubDate ?? null;
         let published_at: string | null = null;
         if (ts) {
@@ -284,22 +259,29 @@ async function runIngestion() {
           } catch {}
         }
 
+        // Freshness ≤ 12h
         const TWELVE_HOURS = 12 * 60 * 60 * 1000;
         if (published_at) {
           const ageMs = Date.now() - new Date(published_at).getTime();
           if (ageMs > TWELVE_HOURS) continue;
         }
 
+        // --- thresholds & helpers ---
         const MIN_FULLTEXT = 200;
 
+        // Start with whatever the feed provides (can be short!)
         let content = parsed.data.contentSnippet || parsed.data.content || null;
 
         if (FULLTEXT_SOURCES.has(source)) {
+          // For Reuters/AP/Bloomberg we KEEP the RSS snippet no matter how short,
+          // and only try to UPGRADE to full text (never drop because it's short).
           const full = await extractFullText(linkUnwrapped);
           if (full && full.length >= MIN_FULLTEXT) {
             content = full;
           }
         } else {
+          // For native RSS sources (BBC/Politico), if snippet is very thin,
+          // try one full-text extraction as a fallback; otherwise keep snippet.
           if (!content || content.trim().length < 40) {
             const maybeFull = await extractFullText(linkUnwrapped);
             if (maybeFull && maybeFull.length >= MIN_FULLTEXT) {
@@ -308,16 +290,20 @@ async function runIngestion() {
           }
         }
 
+        // Final guard: if there's still nothing at all, as a last resort keep title
         if (!content || !content.trim()) {
           content = title || "(no summary)";
         }
 
+        // Clean artifacts (Google News trailing "AP News", "Reuters", etc.)
         content = cleanContent(content);
 
+        // Drop very short items (change 70 to whatever threshold you like)
         if (content.length < 70) {
           continue;
         }
 
+        // Language filter (skip non-English)
         const lang = franc(content);
         if (lang !== "eng" && lang !== "und") continue;
 
@@ -352,6 +338,7 @@ async function runIngestion() {
       } catch (err: any) {
         console.error("[ingest:item] error", source, err?.message || err);
         errors.push({ source, error: String(err?.message || err) });
+        // continue loop
       }
     }
   }
@@ -359,23 +346,12 @@ async function runIngestion() {
   return { ok: true, articlesUpserted, errors };
 }
 
-// ─────────────────────────────────────────────────────────
 // Handlers (Vercel Cron calls GET)
-// ─────────────────────────────────────────────────────────
 export async function GET(req: Request) {
   if (!isAuthorized(req)) return new Response("Unauthorized", { status: 401 });
   try {
     const result = await runIngestion();
-
-    // Trigger LLM only if we actually ingested something
-    let llm: any = null;
-    if (result.articlesUpserted > 0) {
-      const origin =
-        process.env.NEXT_PUBLIC_SITE_URL || new URL(req.url).origin;
-      llm = await triggerClusterLLM(origin);
-    }
-
-    return Response.json({ ...result, llm });
+    return Response.json(result);
   } catch (e: any) {
     return Response.json(
       { ok: false, error: String(e?.message ?? e) },
@@ -389,15 +365,7 @@ export async function POST(req: Request) {
   if (!isAuthorized(req)) return new Response("Unauthorized", { status: 401 });
   try {
     const result = await runIngestion();
-
-    let llm: any = null;
-    if (result.articlesUpserted > 0) {
-      const origin =
-        process.env.NEXT_PUBLIC_SITE_URL || new URL(req.url).origin;
-      llm = await triggerClusterLLM(origin);
-    }
-
-    return Response.json({ ...result, llm });
+    return Response.json(result);
   } catch (e: any) {
     return Response.json(
       { ok: false, error: String(e?.message ?? e) },
