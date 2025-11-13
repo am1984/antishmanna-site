@@ -159,7 +159,7 @@ Goal: Group these articles into topic clusters, rank clusters by how much they w
 • Read titles and SUMMARY_TEXT (title + first 400 chars of content) of members in that cluster.
 • Produce one ≤50-word key-takeaway "summary" per cluster. 
 • Be factual. No hype. No repetition.
-• Add some meta data at the end of the summary to concisely show cluster size, number of distinct sources and latest new date/time. Encapsulate the information within brackets, and use the same format.
+• Add some meta data at the end of the summary to concisely show cluster size, number of distinct sources and latest new date/time. Encapsulate the information within brackets, and use the same format; for example: [cluster size=3; sources=2; latest article=11th Sep @ 21:30 UTC]
 
 4) Output (JSON-only; no prose)
 Return a single JSON object with two arrays:
