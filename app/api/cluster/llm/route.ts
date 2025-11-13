@@ -429,7 +429,7 @@ export async function POST(req: Request) {
         return {
           run_id: runId,
           cluster_id: cid,
-          summary_text: trunc(s.summary, 300),
+          summary_text: trunc(s.summary, 350),
           model: MODEL,
           tokens_in: tokensIn || null,
           tokens_out: tokensOut || null,
